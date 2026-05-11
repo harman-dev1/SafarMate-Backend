@@ -25,6 +25,7 @@ const userSchema = new mongoose.Schema(
       mapStyle: { type: String, enum: ['default', 'satellite', 'dark'], default: 'default' },
       units: { type: String, enum: ['metric', 'imperial'], default: 'metric' },
     },
+    trustScore: { type: Number, default: 50, min: 0, max: 100 },
   },
   { timestamps: true }
 );
