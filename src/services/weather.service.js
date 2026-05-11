@@ -31,7 +31,9 @@ const samplePolyline = (coords, intervalMeters = 10000) => {
     const b = { lat: coords[i + 1][1], lng: coords[i + 1][0] };
     const segLen = distMeters(a, b);
 
-    while (nextSampleAt + intervalMeters <= cumDist + segLen) {
+    // Strict `<` (not `<=`) so we never push a sample at the exact end —
+    // that's reserved for the final end-of-route sample below.
+    while (nextSampleAt + intervalMeters < cumDist + segLen) {
       nextSampleAt += intervalMeters;
       const t = (nextSampleAt - cumDist) / segLen;
       samples.push({
@@ -59,7 +61,6 @@ const subsample = (arr, n) => {
 // ────────── Risk classifier ──────────
 const classifyRisk = (forecast) => {
   if (!forecast) return { level: 'unknown', score: 0 };
-
   const precipProb = forecast.precipitationProbability || 0;
   const precipMm = forecast.precipitationMm || 0;
   const windKmh = forecast.windKmh || 0;
@@ -146,7 +147,6 @@ const fetchHourlyForecast = async ({ lat, lng, hours = 240 }) => {
 const isGenericName = (name) => {
   if (!name) return true;
   if (name.length < 3) return true;
-  // Filter out names like "Street 4", "Road 12", "Lane 5", "Block A"
   if (/^(unnamed|street|road|lane|block)\s*[\d\w]*$/i.test(name.trim())) return true;
   return false;
 };
@@ -168,16 +168,10 @@ const reverseGeocodeShort = async (lat, lng) => {
       return null;
     }
 
-    // Use the most specific result (first one) — its components match this exact point
     const components = data.results[0]?.address_components || [];
     const findIn = (type) =>
       components.find((c) => c.types.includes(type))?.long_name;
 
-    // Priority — most specific to most general:
-    //   neighborhood/sublocality (Gulberg, DHA Phase 5)
-    //   → route (Mall Road, GT Road, M-2 Motorway)
-    //   → locality (Lahore — fallback for points in middle of nowhere)
-    //   → admin areas
     const candidates = [
       findIn('neighborhood'),
       findIn('sublocality_level_1'),
@@ -190,7 +184,6 @@ const reverseGeocodeShort = async (lat, lng) => {
       findIn('administrative_area_level_2'),
     ];
 
-    // Also sweep through other results if the first doesn't yield anything useful
     if (candidates.every((c) => !c || isGenericName(c))) {
       for (const result of data.results.slice(1)) {
         for (const comp of result.address_components || []) {
@@ -244,12 +237,15 @@ export const getWeatherAlongRoute = async ({
 }) => {
   if (!coordinates?.length) return { samples: [], summary: null };
 
-  // Adaptive sampling: shorter routes get tighter intervals so locality
-  // names actually differ between samples
+  // Adaptive sampling — much tighter for short routes so even a 1km drive
+  // produces multiple weather sample points.
   const interval = intervalMeters || (
-    totalDistance < 30000 ? 3000 :
-    totalDistance < 100000 ? 7000 :
-    10000
+    totalDistance < 3000   ? 500   :   // <3 km: every 500 m
+    totalDistance < 10000  ? 1000  :   // 3–10 km: every 1 km
+    totalDistance < 30000  ? 3000  :   // 10–30 km: every 3 km
+    totalDistance < 100000 ? 7000  :   // 30–100 km: every 7 km
+    totalDistance < 300000 ? 12000 :   // 100–300 km: every 12 km
+    20000                              // >300 km: every 20 km
   );
 
   const points = samplePolyline(coordinates, interval);
