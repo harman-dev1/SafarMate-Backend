@@ -1,6 +1,25 @@
 import Incident, { TTL_BY_TYPE, DENIAL_THRESHOLD_BY_SEVERITY, INCIDENT_TYPES } from '../models/Incident.model.js';
 import User from '../models/User.model.js';
 import ApiError from '../utils/ApiError.js';
+import IncidentArchive from '../models/IncidentArchive.model.js';
+
+
+// Never let an archive-logging failure break the actual incident flow.
+const archiveReport = async (incident) => {
+try {
+await IncidentArchive.create({
+sourceIncidentId: incident._id,
+type: incident.type,
+severity: incident.severity,
+location: incident.location,
+reporter: incident.reporter,
+reporterTrustAtReport: incident.reporterTrustAtReport,
+createdAt: incident.createdAt,
+});
+} catch (err) {
+console.error('IncidentArchive write failed (non-fatal):', err.message);
+}
+};
 
 // ──────────── Geometry helpers ────────────
 const EARTH_R = 6371000;
@@ -84,27 +103,28 @@ export const createIncident = async ({ userId, userLat, userLng, type, lat, lng,
   if (trust < 10) {
     // Persist for audit but flagged
     const flagged = await Incident.create({
-      type, severity: severity || 'medium', note: note || '', imageUrl: imageUrl || null,
-      location: { type: 'Point', coordinates: [lng, lat] },
-      reporter: userId, reporterTrustAtReport: trust,
-      status: 'removed_by_community', // hidden
-      expiresAt: new Date(Date.now() + 3600_000),
-    });
-    return { flagged: true, incident: flagged };
+type, severity: severity || 'medium', note: note || '', imageUrl: imageUrl || null,
+location: { type: 'Point', coordinates: [lng, lat] },
+reporter: userId, reporterTrustAtReport: trust,
+status: 'removed_by_community', // hidden
+expiresAt: new Date(Date.now() + 3600_000),
+});
+await archiveReport(flagged);
+return { flagged: true, incident: flagged };
   }
 
   const incident = await Incident.create({
-    type,
-    severity: severity || 'medium',
-    note: note || '',
-    imageUrl: imageUrl || null,
-    location: { type: 'Point', coordinates: [lng, lat] },
-    reporter: userId,
-    reporterTrustAtReport: trust,
-    expiresAt: computeExpiry(type, trust),
-  });
-
-  return { flagged: false, incident };
+type,
+severity: severity || 'medium',
+note: note || '',
+imageUrl: imageUrl || null,
+location: { type: 'Point', coordinates: [lng, lat] },
+reporter: userId,
+reporterTrustAtReport: trust,
+expiresAt: computeExpiry(type, trust),
+});
+await archiveReport(incident);
+return { flagged: false, incident };
 };
 
 // ──────────── LIST INCIDENTS in bounding box ────────────
@@ -220,7 +240,23 @@ export const verifyIncident = async ({ userId, userLat, userLng, incidentId, act
   }
 
   await incident.save();
-  return incident;
+try {
+await IncidentArchive.updateOne(
+{ sourceIncidentId: incident._id },
+{
+$set: {
+finalConfirmations: incident.confirmations,
+finalDenials: incident.denials,
+...(incident.status === 'removed_by_community'
+? { finalStatus: 'removed_by_community', resolvedAt: new Date() }
+: {}),
+},
+}
+);
+} catch (err) {
+console.error('IncidentArchive update failed (non-fatal):', err.message);
+}
+return incident;
 };
 
 // ──────────── REMOVE BY REPORTER ────────────
@@ -234,7 +270,16 @@ export const removeIncidentByReporter = async ({ userId, incidentId }) => {
     throw new ApiError(400, 'Incident is no longer active.');
   }
   incident.status = 'removed_by_reporter';
-  incident.expiresAt = new Date(); // makes TTL purge it within 60s
-  await incident.save();
-  return incident;
+incident.expiresAt = new Date(); // makes TTL purge it within 60s
+await incident.save();
+try {
+await IncidentArchive.updateOne(
+{ sourceIncidentId: incident._id },
+{ $set: { finalStatus: 'removed_by_reporter', resolvedAt: new Date() } }
+);
+} catch (err) {
+console.error('IncidentArchive update failed (non-fatal):', err.message);
+}
+return incident;
+
 };

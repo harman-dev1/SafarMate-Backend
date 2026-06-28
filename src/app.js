@@ -15,6 +15,7 @@ import nearbyRoutes from './routes/nearby.routes.js';
 import userRoutes from './routes/user.routes.js';
 import weatherRoutes from './routes/weather.routes.js';
 import incidentRoutes from './routes/incident.routes.js';
+import safetyRoutes from './routes/safety.routes.js';
 
 const app = express();
 
@@ -41,6 +42,7 @@ app.use('/api/routes', routeRoutes);
 app.use('/api/nearby', nearbyRoutes);
 app.use('/api/weather', weatherRoutes);
 app.use('/api/incidents', incidentRoutes);
+app.use('/api/safety', safetyRoutes);
 
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
 app.use(errorHandler);
